@@ -1,0 +1,15 @@
+# -----------------------------------------------------------------------
+# HQL Tester configuration — paste into your application.yml (dev profile)
+# -----------------------------------------------------------------------
+hql-tester:
+  enabled: true                      # set false (or omit) in production
+  query-folder: ./hql-test-queries   # absolute or relative to working dir
+  max-results: 100                   # cap for SELECT result rows
+
+# Hibernate SQL logging — lets you also see SQL in the console/log
+spring:
+  jpa:
+    properties:
+      hibernate:
+        format_sql: true
+        show_sql: true               # optional; inspector captures SQL regardless
