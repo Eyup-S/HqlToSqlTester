@@ -90,7 +90,7 @@ public class HqlTesterService {
                     .generatedSql(inspector.getCapturedSql())
                     .executed(false)
                     .executionTimeMs(System.currentTimeMillis() - start)
-                    .error(e.getClass().getSimpleName() + ": " + e.getMessage())
+                    .error(buildErrorMessage(e, hql))
                     .build();
         }
     }
@@ -145,7 +145,7 @@ public class HqlTesterService {
                     .generatedSql(inspector.getCapturedSql())
                     .executed(false)
                     .executionTimeMs(System.currentTimeMillis() - start)
-                    .error(e.getClass().getSimpleName() + ": " + e.getMessage())
+                    .error(buildErrorMessage(e, hql))
                     .build();
         }
     }
@@ -372,6 +372,59 @@ public class HqlTesterService {
             }
         }
         return map;
+    }
+
+    /**
+     * Builds a human-friendly error message. For UnknownEntityException, does a
+     * case-insensitive search through the metamodel and suggests the correct name.
+     */
+    private String buildErrorMessage(Exception e, String hql) {
+        String base = e.getClass().getSimpleName() + ": " + e.getMessage();
+
+        boolean isUnknownEntity = isUnknownEntityException(e);
+        if (!isUnknownEntity) return base;
+
+        List<String> suggestions = suggestEntityNames(hql);
+        if (suggestions.isEmpty()) return base;
+
+        return base + "\n  HINT (case-insensitive matches from metamodel): " + suggestions;
+    }
+
+    private boolean isUnknownEntityException(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t.getClass().getSimpleName().equals("UnknownEntityException")
+                    || (t.getMessage() != null && t.getMessage().contains("Could not resolve root entity"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Extracts words used in entity positions (after FROM / JOIN / UPDATE / DELETE FROM)
+     * and looks for case-insensitive matches in the Hibernate metamodel.
+     * Returns strings like: "personel → Personel"
+     */
+    private List<String> suggestEntityNames(String hql) {
+        Set<String> knownNames = emf.getMetamodel().getEntities().stream()
+                .map(e -> e.getName())
+                .collect(Collectors.toSet());
+
+        if (knownNames.isEmpty()) return Collections.emptyList();
+
+        Pattern entityPosition = Pattern.compile(
+                "(?i)(?:FROM|JOIN|UPDATE|INTO)\\s+(\\w+)", Pattern.CASE_INSENSITIVE);
+        Matcher m = entityPosition.matcher(hql);
+
+        List<String> suggestions = new ArrayList<>();
+        while (m.find()) {
+            String used = m.group(1);
+            knownNames.stream()
+                    .filter(known -> known.equalsIgnoreCase(used) && !known.equals(used))
+                    .findFirst()
+                    .ifPresent(correct -> suggestions.add("'" + used + "' → '" + correct + "'"));
+        }
+        return suggestions;
     }
 
     private void safeRollback(Transaction tx) {
