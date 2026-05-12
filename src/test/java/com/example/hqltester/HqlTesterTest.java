@@ -51,18 +51,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * SETUP:
  *   This test needs the full Spring context and a live DB connection.
  *   If your project has a dev profile, uncomment @ActiveProfiles below.
- *   The test sets hql-tester.enabled=true automatically via @SpringBootTest.
  *
  * NOTE: If @SpringBootTest cannot find your @SpringBootApplication class,
- *   add: @SpringBootTest(classes = YourApplication.class, properties = {...})
+ *   add: @SpringBootTest(classes = YourApplication.class)
  */
-@SpringBootTest(properties = {
-        "hql-tester.enabled=true"
-        // Override defaults if needed:
-        // "hql-tester.query-folder=./hql-test-queries",
-        // "hql-tester.max-results=50",
-        // "hql-tester.result-output-folder=./hql-test-results"
-})
+@SpringBootTest
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("hql-tester")
 // @ActiveProfiles("dev")  // ← uncomment if you need a specific Spring profile

@@ -11,7 +11,6 @@ import org.hibernate.SessionFactory;
 import org.hibernate.Transaction;
 import org.hibernate.query.MutationQuery;
 import org.hibernate.query.Query;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.lang.reflect.Field;
@@ -22,7 +21,6 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
-@ConditionalOnProperty(prefix = "hql-tester", name = "enabled", havingValue = "true")
 public class HqlTesterService {
 
     private final EntityManagerFactory emf;

@@ -4,7 +4,6 @@ import com.example.hqltester.config.HqlTesterProperties;
 import com.example.hqltester.model.HqlFileInfo;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -18,7 +17,6 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 @Service
-@ConditionalOnProperty(prefix = "hql-tester", name = "enabled", havingValue = "true")
 public class HqlFileLoader {
 
     private final HqlTesterProperties properties;
