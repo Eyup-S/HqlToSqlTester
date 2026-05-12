@@ -1,85 +1,84 @@
 # HQL Tester — drop-in package for Oracle → Postgres migration
 
-A self-contained Spring package that runs every HQL query as a named
-`@ParameterizedTest`, captures the SQL Hibernate generates, and writes a
-dated JSON report per run — so you can diff Oracle vs Postgres output side
-by side without any manual HTTP calls.
+A self-contained test-scope Spring package that runs every HQL query as a
+named `@ParameterizedTest`, captures the SQL Hibernate generates, and writes
+a dated JSON report per run — so you can diff Oracle vs Postgres output side
+by side.
+
+Everything lives in `src/test/java` — zero footprint on the production build.
 
 ## Package structure
 
 ```
-src/main/java/com/example/hqltester/
+src/test/java/com/example/hqltester/
 ├── config/
-│   └── HqlTesterProperties.java      # @ConfigurationProperties
+│   └── HqlTesterProperties.java      # @ConfigurationProperties (hql-tester.*)
 ├── model/
 │   ├── QueryType.java
 │   ├── HqlFileInfo.java
-│   ├── HqlTestRequest.java
 │   └── HqlTestResult.java
-└── service/
-    ├── SqlCaptureInspector.java       # Hibernate StatementInspector (per-session)
-    ├── HqlFileLoader.java             # reads .hql / .json files on every call
-    └── HqlTesterService.java          # orchestrates execution + SQL capture
-
-src/test/java/com/example/hqltester/
+├── service/
+│   ├── SqlCaptureInspector.java       # Hibernate StatementInspector (per-session)
+│   ├── HqlFileLoader.java             # reads .hql / .json files on every call
+│   └── HqlTesterService.java          # orchestrates execution + SQL capture
 └── HqlTesterTest.java                 # @SpringBootTest + @ParameterizedTest
 
-hql-test-queries/                      # drop .hql files here — no restart needed
+src/test/resources/
+└── logback-test.xml                   # ensures HqlTester logger is always visible
+
+hql-test-queries/                      # drop .hql files here — picked up on next run
+hql-test-results/                      # written at runtime, gitignored
 ```
 
 ## Setup
 
-### 1. Copy the package
+### 1. Copy the package into your project
 
-Copy `com/example/hqltester` into your `src/main/java`.  
+Copy the `com/example/hqltester` folder into **`src/test/java`** of your project.  
 **Find-replace `com.example` → your actual base package everywhere.**
 
 If `@SpringBootTest` cannot locate your `@SpringBootApplication` class (packages
-don't overlap), add `classes = YourApplication.class` to the annotation in
-`HqlTesterTest.java`:
+don't overlap), specify it explicitly in `HqlTesterTest.java`:
 
 ```java
-@SpringBootTest(classes = YourApplication.class, properties = "hql-tester.enabled=true")
+@SpringBootTest(classes = YourApplication.class)
 ```
 
 ### 2. Add configuration
 
-Merge into your `application-dev.yml` (or whichever profile hits the real DB):
+Copy the properties from `hql-tester-application.properties` into your
+`src/test/resources/application.properties` (or your dev profile properties file):
 
-```yaml
-hql-tester:
-  enabled: true                        # keep false / absent in production
-  query-folder: ./hql-test-queries     # absolute or relative to working dir
-  max-results: 100                     # row cap for SELECT queries
-  result-output-folder: ./hql-test-results  # where JSON reports are written
+```properties
+hql-tester.query-folder=./hql-test-queries
+hql-tester.max-results=100
+hql-tester.result-output-folder=./hql-test-results
 ```
 
-`hql-tester.enabled` defaults to `false`, so nothing is active in production
-unless you explicitly set it.
+### 3. Activate your DB profile (if needed)
 
-### 3. Activate your dev Spring profile (if needed)
-
-Uncomment `@ActiveProfiles` in `HqlTesterTest.java`:
+If your real DB connection lives in a Spring profile, uncomment `@ActiveProfiles`
+in `HqlTesterTest.java`:
 
 ```java
-@ActiveProfiles("dev")   // ← set the profile that wires up your real DB
+@ActiveProfiles("dev")   // ← profile that wires up Oracle or Postgres
 ```
 
 ### 4. Add your HQL files
 
-Drop `.hql` files into `hql-test-queries/`. Each file becomes one named test
-case automatically on the next run — no code changes required.
+Drop `.hql` files into `hql-test-queries/`. Each file becomes a named test case
+on the next run — no code changes needed.
 
 ```
 hql-test-queries/
-├── my-query.hql          # HQL query
+├── my-query.hql          # the HQL
 └── my-query.json         # optional: bind parameter values
 ```
 
-**`.hql` format:**
+**`.hql` format** — first line starting with `-- ` is shown as the description:
 ```sql
--- Description shown in the test report (first line starting with "-- ")
-SELECT e.id, e.name FROM Employee e WHERE e.status = :status
+-- Count active employees by department
+SELECT e.department, count(e) FROM Employee e WHERE e.status = :status GROUP BY e.department
 ```
 
 **`.json` params sidecar:**
@@ -93,16 +92,21 @@ SELECT e.id, e.name FROM Employee e WHERE e.status = :status
 
 ### 5. Add inline ad-hoc queries (optional)
 
-For quick one-off queries that don't need a file, add entries to the
-`inlineHql()` stream in `HqlTesterTest.java`:
+For quick one-off queries without a file, add entries to `inlineHql()` in
+`HqlTesterTest.java`:
 
 ```java
 static Stream<Arguments> inlineHql() {
     return Stream.of(
         Arguments.of(
-            "my-quick-check",
-            "SELECT e.id, e.name FROM Employee e WHERE e.active = true",
+            "count-all-employees",
+            "SELECT count(e) FROM Employee e",
             Map.of()
+        ),
+        Arguments.of(
+            "employees-by-status",
+            "SELECT e.id, e.name FROM Employee e WHERE e.status = :s",
+            Map.of("s", "ACTIVE")
         )
     );
 }
@@ -111,17 +115,19 @@ static Stream<Arguments> inlineHql() {
 ## Running the tests
 
 ```bash
-# Run only HQL tester tests (tagged with @Tag("hql-tester"))
+# Maven — run only HQL tester tests
 mvn test -Dgroups=hql-tester
+
+# Gradle
 ./gradlew test --tests "*.HqlTesterTest"
 
-# Or run from your IDE — each .hql file appears as a named test case
+# IDE — right-click HqlTesterTest and run, or run individual test cases
 ```
 
-## Console output
+Each `.hql` file and each inline entry appears as a **separate named test case**
+in the IDE and in Surefire reports.
 
-Each test prints a formatted block showing the HQL, the generated SQL, and
-results for SELECT queries:
+## Console output
 
 ```
 ══════════════════════════════════════════════════════════════════════
@@ -151,7 +157,7 @@ For DML (UPDATE / DELETE / INSERT):
 NOTE: DML translated and ROLLED BACK — would have affected 5 row(s). No data was committed.
 ```
 
-## JSON reports for Oracle vs Postgres comparison
+## Oracle vs Postgres comparison via JSON reports
 
 After every run a file is written to `hql-test-results/`:
 
@@ -161,11 +167,10 @@ hql-test-results/
 └── hql-results-2024-05-11_15-45-00-PostgreSQLDialect.json
 ```
 
-Run against Oracle, switch the DB config/profile, run again against Postgres,
-then diff the two files — the `generatedSql` fields show every dialect
-difference directly.
+Run against Oracle → switch DB config/profile → run again against Postgres →
+diff the two files. The `generatedSql` field in each result shows exactly how
+Hibernate translated the same HQL for each dialect.
 
-Report structure:
 ```json
 {
   "runAt": "...",
@@ -176,10 +181,8 @@ Report structure:
   "results": [
     {
       "source": "01-to-char-date.hql",
-      "hql": "...",
       "queryType": "SELECT",
-      "generatedSql": ["select to_char(e1_0.created_at,...) from employees e1_0"],
-      "executed": true,
+      "generatedSql": ["select e1_0.id, to_char(e1_0.created_at,'YYYY-MM-DD') from employees e1_0"],
       "columns": ["id", "formattedDate"],
       "rows": [[1, "2024-01-15"]],
       "rowCount": 1,
@@ -209,18 +212,16 @@ Report structure:
 
 - **DML safety**: UPDATE / DELETE / INSERT queries are executed inside a
   transaction that is **always rolled back**. The statement must reach the DB
-  so Hibernate compiles it and the `StatementInspector` can capture it, but no
-  data is ever committed. **Oracle sequences** (NEXTVAL) may still advance on
-  rollback — that is normal Oracle behaviour.
+  so Hibernate compiles it and the `StatementInspector` captures the SQL, but
+  no data is ever committed. **Oracle sequences** (NEXTVAL) may still advance
+  on rollback — that is normal Oracle behaviour.
 
-- **SQL capture mechanism**: A `SqlCaptureInspector` is attached per-session via
-  `SessionFactory.withOptions().statementInspector(...)`, so it never interferes
-  with the rest of the application.
+- **SQL capture**: `SqlCaptureInspector` is attached per-session via
+  `SessionFactory.withOptions().statementInspector(...)` — it never touches
+  other sessions or application code.
+
+- **No production footprint**: The entire package is in `src/test/java` and is
+  never included in the production build.
 
 - **Hibernate 6 only**: `createMutationQuery()`, `SessionFactory.withOptions()`,
-  and `StatementInspector` (`org.hibernate.resource.jdbc.spi`) all require
-  Hibernate 6.x.
-
-- **No production impact**: All service beans carry
-  `@ConditionalOnProperty(prefix = "hql-tester", name = "enabled", havingValue = "true")`.
-  Nothing is created unless that property is explicitly set.
+  and `StatementInspector` (`org.hibernate.resource.jdbc.spi`) require Hibernate 6.x.
