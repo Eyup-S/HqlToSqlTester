@@ -7,8 +7,11 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "hql-tester")
 public class HqlTesterProperties {
 
-    /** Absolute or relative path to the folder containing .hql files. */
-    private String queryFolder = "./hql-test-queries";
+    /**
+     * Which dialect is currently active: "oracle" or "postgres".
+     * Controls which expected SQL fragment is asserted in each test.
+     */
+    private String activeDialect = "oracle";
 
     /** Maximum rows returned for SELECT queries. */
     private int maxResults = 100;
@@ -16,8 +19,8 @@ public class HqlTesterProperties {
     /** Folder where per-run JSON result files are written. */
     private String resultOutputFolder = "./hql-test-results";
 
-    public String getQueryFolder() { return queryFolder; }
-    public void setQueryFolder(String queryFolder) { this.queryFolder = queryFolder; }
+    public String getActiveDialect() { return activeDialect; }
+    public void setActiveDialect(String activeDialect) { this.activeDialect = activeDialect; }
 
     public int getMaxResults() { return maxResults; }
     public void setMaxResults(int maxResults) { this.maxResults = maxResults; }

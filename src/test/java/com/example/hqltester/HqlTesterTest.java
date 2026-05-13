@@ -3,7 +3,6 @@ package com.example.hqltester;
 import com.example.hqltester.config.HqlTesterProperties;
 import com.example.hqltester.model.HqlTestResult;
 import com.example.hqltester.model.QueryType;
-import com.example.hqltester.service.HqlFileLoader;
 import com.example.hqltester.service.HqlTesterService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.EntityManagerFactory;
@@ -15,10 +14,10 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -32,25 +31,18 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * HQL inspection test suite.
+ * HQL → SQL inspection and dialect comparison test suite.
  *
- * Runs every .hql file in the configured query folder as a separate
- * named test case. Also runs any inline queries defined in inlineHql().
+ * Each test case carries:
+ *   description | HQL | params | expected Oracle SQL fragment | expected Postgres SQL fragment
  *
- * After all tests finish, results are written to hql-test-results/ as a
- * dated JSON file — run against Oracle and again against Postgres, then
- * diff the two files to spot dialect differences in generated SQL.
+ * Two assertions per test:
+ *   1. result.error is null  → HQL compiled and ran on the DB without error
+ *   2. generated SQL contains the expected fragment for the active dialect
+ *      → confirms FunctionContributor / dialect mapping is applied correctly
  *
- * HOW TO ADD A NEW QUERY (no restart, no code change):
- *   Drop a new .hql file into the query folder. It becomes a test case
- *   on the next test run automatically.
- *
- * FOR INLINE AD-HOC QUERIES:
- *   Add an entry to the inlineHql() stream below.
- *
- * SETUP:
- *   This test needs the full Spring context and a live DB connection.
- *   If your project has a dev profile, uncomment @ActiveProfiles below.
+ * Switch hql-tester.active-dialect=oracle|postgres in your properties file
+ * when you change the target database.
  *
  * NOTE: If @SpringBootTest cannot find your @SpringBootApplication class,
  *   add: @SpringBootTest(classes = YourApplication.class)
@@ -58,124 +50,328 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("hql-tester")
-// @ActiveProfiles("dev")  // ← uncomment if you need a specific Spring profile
+// @ActiveProfiles("dev")  // ← uncomment if needed
 class HqlTesterTest {
 
     private static final Logger log = LoggerFactory.getLogger("HqlTester");
 
+    @Autowired
+    // @Qualifier("yourEntityManagerFactory")  // ← add qualifier if multi-datasource
+    private EntityManagerFactory emf;
+
     @Autowired private HqlTesterService service;
-    @Autowired private HqlFileLoader fileLoader;
     @Autowired private HqlTesterProperties properties;
-    @Autowired private EntityManagerFactory emf;
     @Autowired private ObjectMapper objectMapper;
 
-    /** Accumulates results across all parameterized invocations for the JSON report. */
     private final List<HqlTestResult> sessionResults = new CopyOnWriteArrayList<>();
 
     // =========================================================================
-    // File-based tests — auto-discovers every .hql file in the query folder
+    // Main parameterized test
     // =========================================================================
 
-    /**
-     * One test case per .hql file. The test name in the IDE/report is the
-     * filename, so results are easy to navigate.
-     *
-     * Drop a new .hql file into the folder and rerun — no code changes needed.
-     */
     @ParameterizedTest(name = "[{index}] {0}")
-    @MethodSource("hqlFiles")
-    void testFromFile(String filename, String hql, Map<String, Object> params) {
-        HqlTestResult result = service.run(hql, params, filename);
-        sessionResults.add(result);
-        printResult(result);
+    @MethodSource("hqlQueries")
+    void testSqlGeneration(String description,
+                           String hql,
+                           Map<String, Object> params,
+                           String expectedOracleFragment,
+                           String expectedPostgresFragment) {
 
-        assertThat(result.getError())
-                .as("HQL compilation/execution error in '%s'", filename)
-                .isNull();
-    }
-
-    // =========================================================================
-    // Inline tests — add ad-hoc queries directly here
-    // =========================================================================
-
-    /**
-     * Inline parameterized queries. Useful for quick experiments that don't
-     * warrant a dedicated file, or for testing specific keyword combinations.
-     *
-     * Format: Arguments.of("description", "HQL here", Map.of("param", value))
-     * Use Map.of() for queries with no bind parameters.
-     */
-    @ParameterizedTest(name = "[{index}] {0}")
-    @MethodSource("inlineHql")
-    void testInline(String description, String hql, Map<String, Object> params) {
         HqlTestResult result = service.run(hql, params, description);
         sessionResults.add(result);
         printResult(result);
 
+        // 1. No compilation or DB execution error
         assertThat(result.getError())
-                .as("HQL compilation/execution error in '%s'", description)
+                .as("HQL error in '%s':\n%s", description, result.getError())
                 .isNull();
+
+        // 2. Generated SQL contains the expected dialect-specific fragment
+        String actualSql = String.join(" ", result.getGeneratedSql())
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("\\s+", " ");
+
+        String expectedFragment = isOracle()
+                ? expectedOracleFragment.toLowerCase(Locale.ROOT)
+                : expectedPostgresFragment.toLowerCase(Locale.ROOT);
+
+        assertThat(actualSql)
+                .as("Expected SQL fragment not found in '%s'\n  Dialect  : %s\n  Generated: %s\n  Expected : ...%s...",
+                        description, activeDialectLabel(), actualSql, expectedFragment)
+                .contains(expectedFragment);
     }
 
     // =========================================================================
-    // MethodSource providers
+    // Test cases
+    //
+    // Structure: tc("description", "HQL", "OracleFragment", "PostgresFragment")
+    //            tc("description", "HQL", Map.of("param", val), "OracleFragment", "PostgresFragment")
+    //
+    // ⚠  Replace entity and field names with your own throughout.
+    //    Oracle fragments reflect what Oracle dialect generates.
+    //    Postgres fragments reflect what your FunctionContributor produces —
+    //    adjust them if your contributor generates something different.
     // =========================================================================
 
-    /**
-     * Non-static: uses the autowired fileLoader bean.
-     * Works with @TestInstance(PER_CLASS).
-     * Streams all .hql files — if the folder is empty, 0 test cases are generated.
-     */
-    Stream<Arguments> hqlFiles() throws IOException {
-        List<com.example.hqltester.model.HqlFileInfo> files = fileLoader.listFiles();
-        if (files.isEmpty()) {
-            log.warn("No .hql files found in: {}", fileLoader.resolveFolder());
-        }
-        return files.stream().map(info -> {
-            try {
-                return Arguments.of(
-                        info.getFilename(),
-                        fileLoader.loadHql(info.getFilename()),
-                        fileLoader.loadParams(info.getFilename())
-                );
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
-            }
-        });
-    }
-
-    /**
-     * Add your inline queries here.
-     * Each Arguments entry becomes a separate named test case.
-     */
-    static Stream<Arguments> inlineHql() {
+    static Stream<Arguments> hqlQueries() {
         return Stream.of(
 
-                // ---- Replace "Employee" with one of your actual entity names ----
-                Arguments.of(
-                        "count-all",
-                        "SELECT count(e) FROM Employee e",
-                        Map.of()
-                )
+            // ── DATE : TRUNC ─────────────────────────────────────────────────
 
-                // ---- More examples (uncomment and adapt) ----
+            tc("trunc-date",
+                "SELECT function('trunc', e.createdAt) FROM Employee e",
+                "trunc(",
+                "date_trunc("),
 
-                // Arguments.of(
-                //     "select-by-status",
-                //     "SELECT e.id, e.name FROM Employee e WHERE e.status = :status",
-                //     Map.of("status", "ACTIVE")
-                // ),
-                // Arguments.of(
-                //     "to-char-inline",
-                //     "SELECT function('to_char', e.createdAt, 'YYYY-MM-DD') FROM Employee e",
-                //     Map.of()
-                // ),
-                // Arguments.of(
-                //     "update-dry-run",                          // DML: rolled back, never committed
-                //     "UPDATE Employee e SET e.status = :s WHERE e.id = :id",
-                //     Map.of("s", "INACTIVE", "id", 1L)
-                // )
+            tc("trunc-date-in-where",
+                "SELECT e FROM Employee e WHERE function('trunc', e.createdAt) = function('trunc', function('sysdate'))",
+                "trunc(",
+                "date_trunc("),
+
+            tc("trunc-number",
+                // trunc on a number — Postgres also supports trunc() for numerics,
+                // so typically no transformation needed here
+                "SELECT function('trunc', e.salary, 2) FROM Employee e",
+                "trunc(",
+                "trunc("),
+
+            // ── DATE : SYSDATE / SYSTIMESTAMP ────────────────────────────────
+
+            tc("sysdate",
+                "SELECT e FROM Employee e WHERE e.createdAt < function('sysdate')",
+                "sysdate",
+                "now()"),
+
+            tc("systimestamp",
+                "SELECT e FROM Employee e WHERE e.updatedAt < function('systimestamp')",
+                "systimestamp",
+                "current_timestamp"),
+
+            tc("sysdate-in-select",
+                "SELECT e.id, function('sysdate') FROM Employee e",
+                "sysdate",
+                "now()"),
+
+            // ── DATE : ADD_MONTHS ────────────────────────────────────────────
+
+            tc("add-months",
+                "SELECT e FROM Employee e WHERE e.expiryDate > function('add_months', function('sysdate'), 3)",
+                "add_months(",
+                "interval"),   // adjust: contributor likely generates e.g. + interval '3 months'
+
+            tc("add-months-negative",
+                "SELECT e FROM Employee e WHERE e.startDate > function('add_months', function('sysdate'), -6)",
+                "add_months(",
+                "interval"),
+
+            // ── DATE : MONTHS_BETWEEN ────────────────────────────────────────
+
+            tc("months-between",
+                "SELECT function('months_between', e.endDate, e.startDate) FROM Employee e",
+                "months_between(",
+                "date_part("),  // adjust: depends on your contributor implementation
+
+            // ── DATE : LAST_DAY ──────────────────────────────────────────────
+
+            tc("last-day",
+                "SELECT function('last_day', e.createdAt) FROM Employee e",
+                "last_day(",
+                "date_trunc("), // adjust: contributor likely generates date_trunc('month', ...) + interval
+
+            // ── DATE : TO_DATE ───────────────────────────────────────────────
+
+            tc("to-date",
+                "SELECT e FROM Employee e WHERE e.createdAt > function('to_date', :dateStr, 'YYYY-MM-DD')",
+                Map.of("dateStr", "2024-01-01"),
+                "to_date(",
+                "to_date("),   // Postgres also has to_date, but format mask syntax may differ
+
+            // ── TO_CHAR : WITH DATE FORMAT ───────────────────────────────────
+
+            tc("to-char-date-yyyymmdd",
+                "SELECT function('to_char', e.createdAt, 'YYYY-MM-DD') FROM Employee e",
+                "to_char(",
+                "to_char("),
+
+            tc("to-char-date-with-time",
+                "SELECT function('to_char', e.createdAt, 'YYYY-MM-DD HH24:MI:SS') FROM Employee e",
+                "to_char(",
+                "to_char("),
+
+            tc("to-char-date-month-year",
+                "SELECT function('to_char', e.createdAt, 'MM/YYYY') FROM Employee e",
+                "to_char(",
+                "to_char("),
+
+            // ── TO_CHAR : NUMBER ─────────────────────────────────────────────
+
+            tc("to-char-number-with-format",
+                "SELECT function('to_char', e.salary, '999,999.99') FROM Employee e",
+                "to_char(",
+                "to_char("),
+
+            tc("to-char-number-no-format",
+                // Oracle: to_char(col), Postgres: your contributor likely emits cast(col as text)
+                "SELECT function('to_char', e.id) FROM Employee e",
+                "to_char(",
+                "cast("),      // adjust if your contributor generates something else
+
+            // ── TO_NUMBER / CAST ─────────────────────────────────────────────
+
+            tc("to-number-integer",
+                "SELECT cast(e.salaryStr as integer) FROM Employee e",
+                "cast(",
+                "cast("),
+
+            tc("to-number-double",
+                "SELECT cast(e.salaryStr as double) FROM Employee e",
+                "cast(",
+                "cast("),
+
+            // ── AGGREGATE : LISTAGG ──────────────────────────────────────────
+
+            tc("listagg-basic",
+                "SELECT e.department, function('listagg', e.name, ',') " +
+                "FROM Employee e GROUP BY e.department",
+                "listagg(",
+                "string_agg("),
+
+            tc("listagg-in-having",
+                "SELECT e.department, function('listagg', e.name, ',') " +
+                "FROM Employee e GROUP BY e.department " +
+                "HAVING count(e) > :minCount",
+                Map.of("minCount", 1),
+                "listagg(",
+                "string_agg("),
+
+            // ── STRING FUNCTIONS ─────────────────────────────────────────────
+
+            tc("coalesce-nvl",
+                // Use coalesce in HQL — portable, no contributor needed
+                "SELECT coalesce(e.middleName, 'N/A') FROM Employee e",
+                "coalesce(",
+                "coalesce("),
+
+            tc("lpad",
+                "SELECT function('lpad', e.code, 10, '0') FROM Employee e",
+                "lpad(",
+                "lpad("),
+
+            tc("rpad",
+                "SELECT function('rpad', e.code, 10, ' ') FROM Employee e",
+                "rpad(",
+                "rpad("),
+
+            tc("instr",
+                // Oracle: instr(), Postgres: strpos() or position()
+                "SELECT function('instr', e.email, '@') FROM Employee e",
+                "instr(",
+                "strpos("),    // adjust if your contributor uses position() instead
+
+            tc("substr",
+                "SELECT function('substr', e.name, 1, 5) FROM Employee e",
+                "substr(",
+                "substr("),
+
+            // ── CASE WHEN (replaces DECODE) ──────────────────────────────────
+
+            tc("case-when-simple",
+                "SELECT CASE e.status " +
+                "WHEN 'A' THEN 'Active' " +
+                "WHEN 'I' THEN 'Inactive' " +
+                "ELSE 'Unknown' END FROM Employee e",
+                "case",
+                "case"),
+
+            tc("case-when-searched",
+                "SELECT CASE " +
+                "WHEN e.salary > 50000 THEN 'Senior' " +
+                "WHEN e.salary > 30000 THEN 'Mid' " +
+                "ELSE 'Junior' END FROM Employee e",
+                "case",
+                "case"),
+
+            // ── DML : UPDATE ─────────────────────────────────────────────────
+            // These are always rolled back — no data is committed.
+
+            tc("update-set-sysdate",
+                "UPDATE Employee e SET e.updatedAt = function('sysdate') WHERE e.status = :status",
+                Map.of("status", "ACTIVE"),
+                "sysdate",
+                "now()"),
+
+            tc("update-trunc-in-where",
+                "UPDATE Employee e SET e.status = :newStatus " +
+                "WHERE function('trunc', e.createdAt) < function('trunc', function('sysdate'))",
+                Map.of("newStatus", "EXPIRED"),
+                "trunc(",
+                "date_trunc("),
+
+            tc("update-add-months",
+                "UPDATE Employee e SET e.expiryDate = function('add_months', function('sysdate'), 12) " +
+                "WHERE e.id = :id",
+                Map.of("id", 1L),
+                "add_months(",
+                "interval"),
+
+            // ── DML : DELETE ─────────────────────────────────────────────────
+
+            tc("delete-with-sysdate",
+                "DELETE FROM Employee e " +
+                "WHERE e.createdAt < function('add_months', function('sysdate'), -24)",
+                "add_months(",
+                "interval"),
+
+            tc("delete-with-trunc",
+                "DELETE FROM Employee e " +
+                "WHERE function('trunc', e.createdAt) < :cutoff",
+                Map.of("cutoff", java.time.LocalDate.now()),
+                "trunc(",
+                "date_trunc(")
+
+            // ── MERGE ─────────────────────────────────────────────────────────
+            // Hibernate 6 HQL MERGE generates MERGE INTO for Oracle and
+            // INSERT ... ON CONFLICT for Postgres. Uncomment and adapt to
+            // your entity structure.
+            //
+            // tc("merge-upsert",
+            //     "MERGE INTO Employee e " +
+            //     "USING (SELECT s.id, s.name FROM EmployeeStaging s) AS source (id, name) " +
+            //     "ON (e.id = source.id) " +
+            //     "WHEN MATCHED THEN UPDATE SET e.name = source.name " +
+            //     "WHEN NOT MATCHED THEN INSERT (id, name) VALUES (source.id, source.name)",
+            //     "merge into",
+            //     "on conflict")
         );
+    }
+
+    // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    /** No-params shorthand. */
+    private static Arguments tc(String desc, String hql, String oraFrag, String pgFrag) {
+        return Arguments.of(desc, hql, Map.of(), oraFrag, pgFrag);
+    }
+
+    /** With bind params. */
+    private static Arguments tc(String desc, String hql,
+                                 Map<String, Object> params,
+                                 String oraFrag, String pgFrag) {
+        return Arguments.of(desc, hql, params, oraFrag, pgFrag);
+    }
+
+    private boolean isOracle() {
+        String prop = properties.getActiveDialect();
+        if (prop != null && !prop.isBlank()) {
+            return prop.toLowerCase(Locale.ROOT).contains("oracle");
+        }
+        // Fallback: auto-detect from actual Hibernate dialect
+        return resolveDialectName().toLowerCase(Locale.ROOT).contains("oracle");
+    }
+
+    private String activeDialectLabel() {
+        return isOracle() ? "Oracle" : "Postgres";
     }
 
     // =========================================================================
@@ -201,6 +397,7 @@ class HqlTesterTest {
         Map<String, Object> report = new LinkedHashMap<>();
         report.put("runAt", LocalDateTime.now().toString());
         report.put("dialect", dialect);
+        report.put("activeDialectLabel", activeDialectLabel());
         report.put("totalTests", sessionResults.size());
         report.put("passed", passed);
         report.put("failed", failed);
@@ -209,12 +406,44 @@ class HqlTesterTest {
         objectMapper.writerWithDefaultPrettyPrinter().writeValue(outputFile.toFile(), report);
         log.info("═".repeat(70));
         log.info("Results written to: {}", outputFile.toAbsolutePath());
-        log.info("Passed: {} / {}  |  Failed: {}", passed, sessionResults.size(), failed);
+        log.info("Dialect: {}  |  Passed: {} / {}  |  Failed: {}",
+                dialect, passed, sessionResults.size(), failed);
         log.info("═".repeat(70));
     }
 
     // =========================================================================
-    // Console output helpers
+    // Debug helpers — run individually, not part of the main suite
+    // =========================================================================
+
+    @Test
+    @Tag("debug")
+    void listKnownEntities() {
+        System.out.println("Entity count: " + emf.getMetamodel().getEntities().size());
+        emf.getMetamodel().getEntities().stream()
+                .sorted(Comparator.comparing(e -> e.getName()))
+                .forEach(e -> System.out.println(e.getName() + "  →  " + e.getJavaType().getSimpleName()));
+    }
+
+    @Test
+    @Tag("debug")
+    void checkFunctionRegistry() {
+        SessionFactoryImplementor sfi = emf.unwrap(SessionFactoryImplementor.class);
+        var registry = sfi.getQueryEngine().getSqmFunctionRegistry();
+
+        System.out.println("Dialect: " + sfi.getJdbcServices().getDialect().getClass().getName());
+
+        List.of("trunc", "sysdate", "systimestamp", "add_months", "months_between",
+                "last_day", "to_char", "to_date", "listagg", "instr", "lpad", "rpad", "substr")
+            .forEach(fn -> {
+                var descriptor = registry.findFunctionDescriptor(fn);
+                System.out.printf("%-20s → %s%n", fn,
+                        descriptor == null ? "NOT REGISTERED"
+                                           : descriptor.getClass().getSimpleName());
+            });
+    }
+
+    // =========================================================================
+    // Console output
     // =========================================================================
 
     private void printResult(HqlTestResult result) {
@@ -222,7 +451,8 @@ class HqlTesterTest {
         String sep = "═".repeat(70);
 
         sb.append("\n").append(sep).append("\n");
-        sb.append(String.format("  %-58s [%s]%n", result.getSource(), result.getQueryType()));
+        sb.append(String.format("  %-52s [%s][%s]%n",
+                result.getSource(), result.getQueryType(), activeDialectLabel()));
         sb.append(sep).append("\n");
 
         sb.append("HQL:\n");
@@ -242,7 +472,6 @@ class HqlTesterTest {
             sb.append("\nRESULTS: ")
               .append(result.getRowCount()).append(" row(s)")
               .append("  |  ").append(result.getExecutionTimeMs()).append("ms\n");
-
             if (result.getColumns() != null && !result.getColumns().isEmpty()) {
                 sb.append(formatTable(result.getColumns(), result.getRows()));
             }
@@ -268,59 +497,47 @@ class HqlTesterTest {
                 .forEach(line -> sb.append(pad).append(line).append("\n"));
     }
 
-    /**
-     * Simple fixed-width ASCII table.
-     * Displays at most 20 rows in the console (full data still in the JSON file).
-     */
     private String formatTable(List<String> columns, List<List<Object>> rows) {
         if (columns.isEmpty()) return "";
 
         int[] widths = new int[columns.size()];
-        for (int i = 0; i < columns.size(); i++) {
-            widths[i] = columns.get(i).length();
-        }
+        for (int i = 0; i < columns.size(); i++) widths[i] = columns.get(i).length();
         for (List<Object> row : rows) {
             for (int i = 0; i < Math.min(row.size(), widths.length); i++) {
                 widths[i] = Math.max(widths[i], Math.min(cellText(row.get(i)).length(), 40));
             }
         }
 
-        String rowSeparator = "  +" + Arrays.stream(widths)
+        String rowSep = "  +" + Arrays.stream(widths)
                 .mapToObj(w -> "-".repeat(w + 2))
                 .collect(Collectors.joining("+")) + "+\n";
 
         StringBuilder sb = new StringBuilder();
-        sb.append(rowSeparator);
-
-        // Header
+        sb.append(rowSep);
         sb.append("  |");
         for (int i = 0; i < columns.size(); i++) {
             sb.append(String.format(" %-" + widths[i] + "s |", columns.get(i)));
         }
-        sb.append("\n").append(rowSeparator);
+        sb.append("\n").append(rowSep);
 
-        // Data rows (capped for console readability; JSON file has all rows)
-        int displayLimit = Math.min(rows.size(), 20);
-        for (int r = 0; r < displayLimit; r++) {
+        int limit = Math.min(rows.size(), 20);
+        for (int r = 0; r < limit; r++) {
             sb.append("  |");
             for (int c = 0; c < columns.size(); c++) {
                 String val = (r < rows.size() && c < rows.get(r).size())
-                        ? truncate(cellText(rows.get(r).get(c)), 40)
-                        : "";
+                        ? truncate(cellText(rows.get(r).get(c)), 40) : "";
                 sb.append(String.format(" %-" + widths[c] + "s |", val));
             }
             sb.append("\n");
         }
-        if (rows.size() > displayLimit) {
-            sb.append("  ... (").append(rows.size() - displayLimit).append(" more rows — see JSON file)\n");
+        if (rows.size() > limit) {
+            sb.append("  ... (").append(rows.size() - limit).append(" more rows)\n");
         }
-        sb.append(rowSeparator);
+        sb.append(rowSep);
         return sb.toString();
     }
 
-    private String cellText(Object value) {
-        return value == null ? "null" : value.toString();
-    }
+    private String cellText(Object v) { return v == null ? "null" : v.toString(); }
 
     private String truncate(String s, int max) {
         return s.length() > max ? s.substring(0, max - 3) + "..." : s;
@@ -329,16 +546,12 @@ class HqlTesterTest {
     private String resolveDialectName() {
         try {
             return emf.unwrap(SessionFactoryImplementor.class)
-                    .getJdbcServices()
-                    .getDialect()
-                    .getClass()
-                    .getSimpleName();
+                    .getJdbcServices().getDialect().getClass().getSimpleName();
         } catch (Exception e) {
-            // Fallback: check JPA properties map
-            Object dialect = emf.getProperties().get("hibernate.dialect");
-            if (dialect != null) {
-                String name = dialect.toString();
-                return name.contains(".") ? name.substring(name.lastIndexOf('.') + 1) : name;
+            Object d = emf.getProperties().get("hibernate.dialect");
+            if (d != null) {
+                String n = d.toString();
+                return n.contains(".") ? n.substring(n.lastIndexOf('.') + 1) : n;
             }
             return "UnknownDialect";
         }
