@@ -71,25 +71,29 @@ hql-tester.result-output-folder=./hql-test-results
 
 ### 4. Write your test cases
 
-Add entries to `hqlQueries()` in `HqlTesterTest.java`:
+Add entries to `hqlQueries()` in `HqlTesterTest.java`.
+
+Your `FunctionContributor` registers custom functions as named HQL functions, so call them
+directly — **no `function()` wrapper needed**:
 
 ```java
 static Stream<Arguments> hqlQueries() {
     return Stream.of(
 
         tc("trunc-date",
-            "SELECT function('trunc', e.createdAt) FROM YourEntity e",
+            "SELECT trunc(m.creationDate) FROM Message m",
             "trunc(",        // fragment expected in Oracle SQL
             "date_trunc("),  // fragment expected in Postgres SQL
 
         tc("listagg",
-            "SELECT e.dept, function('listagg', e.name, ',') FROM YourEntity e GROUP BY e.dept",
+            "SELECT m.senderReference, listagg(m.returnMessage, ',') " +
+            "FROM Message m GROUP BY m.senderReference",
             "listagg(",
             "string_agg("),
 
         tc("update-sysdate",     // DML — always rolled back
-            "UPDATE YourEntity e SET e.updatedAt = function('sysdate') WHERE e.id = :id",
-            Map.of("id", 1L),
+            "UPDATE Message m SET m.creationDate = sysdate() WHERE m.orderCount = :cnt",
+            Map.of("cnt", 0L),
             "sysdate",
             "now()")
     );
@@ -159,30 +163,44 @@ RESULTS: 5 row(s)  |  38ms
 
 ## Covered function cases (sample files)
 
-| Test case | Oracle fragment | Postgres fragment |
-|-----------|----------------|-------------------|
-| `trunc-date` | `trunc(` | `date_trunc(` |
-| `trunc-number` | `trunc(` | `trunc(` |
-| `sysdate` | `sysdate` | `now()` |
-| `systimestamp` | `systimestamp` | `current_timestamp` |
-| `add-months` | `add_months(` | `interval` |
-| `months-between` | `months_between(` | `date_part(` |
-| `last-day` | `last_day(` | `date_trunc(` |
-| `to-char-date-*` | `to_char(` | `to_char(` |
-| `to-char-number-no-format` | `to_char(` | `cast(` |
-| `listagg-*` | `listagg(` | `string_agg(` |
-| `instr` | `instr(` | `strpos(` |
-| `update-set-sysdate` | `sysdate` | `now()` |
-| `update-trunc-in-where` | `trunc(` | `date_trunc(` |
-| `delete-with-trunc` | `trunc(` | `date_trunc(` |
+All HQL uses the `Message` entity (`m`) with fields: `senderReference` (String),
+`msgLob` (Clob), `receivedDate` (String/@Convert), `orderCount` (Long), `version` (short),
+`creationDate` (Date), `returnMessage` (String).
+
+Functions are called directly — no `function()` wrapper — because the `FunctionContributor`
+registers them as named HQL functions.
+
+| Test case | HQL call | Oracle fragment | Postgres fragment |
+|-----------|----------|----------------|-------------------|
+| `trunc-date` | `trunc(m.creationDate)` | `trunc(` | `date_trunc(` |
+| `trunc-date-in-where` | `trunc(m.creationDate) = trunc(sysdate())` | `trunc(` | `date_trunc(` |
+| `trunc-number` | `trunc(m.orderCount)` | `trunc(` | `trunc(` |
+| `sysdate` | `m.creationDate < sysdate()` | `sysdate` | `now()` |
+| `systimestamp` | `m.creationDate < systimestamp()` | `systimestamp` | `current_timestamp` |
+| `sysdate-in-select` | `sysdate()` in SELECT | `sysdate` | `now()` |
+| `add-months` | `add_months(sysdate(), 3)` | `add_months(` | `interval` |
+| `add-months-negative` | `add_months(sysdate(), -6)` | `add_months(` | `interval` |
+| `months-between` | `months_between(sysdate(), m.creationDate)` | `months_between(` | `date_part(` |
+| `last-day` | `last_day(m.creationDate)` | `last_day(` | `date_trunc(` |
+| `to-date` | `to_date(:dateStr, 'YYYY-MM-DD')` | `to_date(` | `to_date(` |
+| `to-char-date-*` | `to_char(m.creationDate, 'YYYY-MM-DD')` | `to_char(` | `to_char(` |
+| `to-char-number-with-format` | `to_char(m.orderCount, '999,999')` | `to_char(` | `to_char(` |
+| `to-char-number-no-format` | `to_char(m.orderCount)` | `to_char(` | `cast(` |
+| `listagg-*` | `listagg(m.returnMessage, ',')` | `listagg(` | `string_agg(` |
+| `instr` | `instr(m.senderReference, '-')` | `instr(` | `strpos(` |
+| `lpad` | `lpad(m.senderReference, 20, '0')` | `lpad(` | `lpad(` |
+| `rpad` | `rpad(m.senderReference, 20, ' ')` | `rpad(` | `rpad(` |
+| `substr` | `substr(m.senderReference, 1, 10)` | `substr(` | `substr(` |
+| `coalesce` | `coalesce(m.returnMessage, 'N/A')` | `coalesce(` | `coalesce(` |
+| `case-when-*` | `CASE WHEN ... END` | `case` | `case` |
+| `nvl-string` | `nvl(m.returnMessage, 'N/A')` | `nvl(` | `coalesce(` |
+| `nvl-number` | `nvl(m.orderCount, 0)` | `nvl(` | `coalesce(` |
+| `nvl2` | `nvl2(m.returnMessage, 'Has value', 'No value')` | `nvl2(` | `case when` |
 
 Postgres fragments assume typical `FunctionContributor` output — adjust them
 in `hqlQueries()` to match what your contributor actually generates.
 
 ## Important notes
-
-- **DML is always rolled back** — UPDATE/DELETE/INSERT never commits. Oracle
-  sequences may advance on rollback; that is normal Oracle behaviour.
 
 - **Fragment check, not exact match** — whitespace, alias numbering (`e1_0`),
   and table name quoting vary between Hibernate versions. Checking for the key

@@ -119,229 +119,193 @@ class HqlTesterTest {
             // ── DATE : TRUNC ─────────────────────────────────────────────────
 
             tc("trunc-date",
-                "SELECT function('trunc', e.createdAt) FROM Employee e",
+                "SELECT trunc(m.creationDate) FROM Message m",
                 "trunc(",
                 "date_trunc("),
 
             tc("trunc-date-in-where",
-                "SELECT e FROM Employee e WHERE function('trunc', e.createdAt) = function('trunc', function('sysdate'))",
+                "SELECT m FROM Message m WHERE trunc(m.creationDate) = trunc(sysdate())",
                 "trunc(",
                 "date_trunc("),
 
             tc("trunc-number",
-                // trunc on a number — Postgres also supports trunc() for numerics,
-                // so typically no transformation needed here
-                "SELECT function('trunc', e.salary, 2) FROM Employee e",
+                // trunc on a numeric — both dialects keep trunc() for numbers
+                "SELECT trunc(m.orderCount) FROM Message m",
                 "trunc(",
                 "trunc("),
 
             // ── DATE : SYSDATE / SYSTIMESTAMP ────────────────────────────────
 
             tc("sysdate",
-                "SELECT e FROM Employee e WHERE e.createdAt < function('sysdate')",
+                "SELECT m FROM Message m WHERE m.creationDate < sysdate()",
                 "sysdate",
                 "now()"),
 
             tc("systimestamp",
-                "SELECT e FROM Employee e WHERE e.updatedAt < function('systimestamp')",
+                "SELECT m FROM Message m WHERE m.creationDate < systimestamp()",
                 "systimestamp",
                 "current_timestamp"),
 
             tc("sysdate-in-select",
-                "SELECT e.id, function('sysdate') FROM Employee e",
+                "SELECT m.senderReference, sysdate() FROM Message m",
                 "sysdate",
                 "now()"),
 
             // ── DATE : ADD_MONTHS ────────────────────────────────────────────
 
             tc("add-months",
-                "SELECT e FROM Employee e WHERE e.expiryDate > function('add_months', function('sysdate'), 3)",
+                "SELECT m FROM Message m WHERE m.creationDate > add_months(sysdate(), 3)",
                 "add_months(",
-                "interval"),   // adjust: contributor likely generates e.g. + interval '3 months'
+                "interval"),   // adjust: contributor typically generates + interval '3 months'
 
             tc("add-months-negative",
-                "SELECT e FROM Employee e WHERE e.startDate > function('add_months', function('sysdate'), -6)",
+                "SELECT m FROM Message m WHERE m.creationDate > add_months(sysdate(), -6)",
                 "add_months(",
                 "interval"),
 
             // ── DATE : MONTHS_BETWEEN ────────────────────────────────────────
 
             tc("months-between",
-                "SELECT function('months_between', e.endDate, e.startDate) FROM Employee e",
+                "SELECT months_between(sysdate(), m.creationDate) FROM Message m",
                 "months_between(",
                 "date_part("),  // adjust: depends on your contributor implementation
 
             // ── DATE : LAST_DAY ──────────────────────────────────────────────
 
             tc("last-day",
-                "SELECT function('last_day', e.createdAt) FROM Employee e",
+                "SELECT last_day(m.creationDate) FROM Message m",
                 "last_day(",
                 "date_trunc("), // adjust: contributor likely generates date_trunc('month', ...) + interval
 
             // ── DATE : TO_DATE ───────────────────────────────────────────────
 
             tc("to-date",
-                "SELECT e FROM Employee e WHERE e.createdAt > function('to_date', :dateStr, 'YYYY-MM-DD')",
+                "SELECT m FROM Message m WHERE m.creationDate > to_date(:dateStr, 'YYYY-MM-DD')",
                 Map.of("dateStr", "2024-01-01"),
                 "to_date(",
-                "to_date("),   // Postgres also has to_date, but format mask syntax may differ
+                "to_date("),
 
             // ── TO_CHAR : WITH DATE FORMAT ───────────────────────────────────
 
             tc("to-char-date-yyyymmdd",
-                "SELECT function('to_char', e.createdAt, 'YYYY-MM-DD') FROM Employee e",
+                "SELECT to_char(m.creationDate, 'YYYY-MM-DD') FROM Message m",
                 "to_char(",
                 "to_char("),
 
             tc("to-char-date-with-time",
-                "SELECT function('to_char', e.createdAt, 'YYYY-MM-DD HH24:MI:SS') FROM Employee e",
+                "SELECT to_char(m.creationDate, 'YYYY-MM-DD HH24:MI:SS') FROM Message m",
                 "to_char(",
                 "to_char("),
 
             tc("to-char-date-month-year",
-                "SELECT function('to_char', e.createdAt, 'MM/YYYY') FROM Employee e",
+                "SELECT to_char(m.creationDate, 'MM/YYYY') FROM Message m",
                 "to_char(",
                 "to_char("),
 
             // ── TO_CHAR : NUMBER ─────────────────────────────────────────────
 
             tc("to-char-number-with-format",
-                "SELECT function('to_char', e.salary, '999,999.99') FROM Employee e",
+                "SELECT to_char(m.orderCount, '999,999') FROM Message m",
                 "to_char(",
                 "to_char("),
 
             tc("to-char-number-no-format",
-                // Oracle: to_char(col), Postgres: your contributor likely emits cast(col as text)
-                "SELECT function('to_char', e.id) FROM Employee e",
+                // Oracle: to_char(col), Postgres: contributor likely emits cast(col as text)
+                "SELECT to_char(m.orderCount) FROM Message m",
                 "to_char(",
                 "cast("),      // adjust if your contributor generates something else
 
-            // ── TO_NUMBER / CAST ─────────────────────────────────────────────
+            // ── CAST ─────────────────────────────────────────────────────────
 
-            tc("to-number-integer",
-                "SELECT cast(e.salaryStr as integer) FROM Employee e",
+            tc("cast-to-string",
+                "SELECT cast(m.orderCount as string) FROM Message m",
                 "cast(",
                 "cast("),
 
-            tc("to-number-double",
-                "SELECT cast(e.salaryStr as double) FROM Employee e",
+            tc("cast-to-long",
+                "SELECT cast(m.version as long) FROM Message m",
                 "cast(",
                 "cast("),
 
             // ── AGGREGATE : LISTAGG ──────────────────────────────────────────
 
             tc("listagg-basic",
-                "SELECT e.department, function('listagg', e.name, ',') " +
-                "FROM Employee e GROUP BY e.department",
+                "SELECT m.senderReference, listagg(m.returnMessage, ',') " +
+                "FROM Message m GROUP BY m.senderReference",
                 "listagg(",
                 "string_agg("),
 
             tc("listagg-in-having",
-                "SELECT e.department, function('listagg', e.name, ',') " +
-                "FROM Employee e GROUP BY e.department " +
-                "HAVING count(e) > :minCount",
+                "SELECT m.senderReference, listagg(m.returnMessage, ',') " +
+                "FROM Message m GROUP BY m.senderReference " +
+                "HAVING count(m) > :minCount",
                 Map.of("minCount", 1),
                 "listagg(",
                 "string_agg("),
 
             // ── STRING FUNCTIONS ─────────────────────────────────────────────
 
-            tc("coalesce-nvl",
-                // Use coalesce in HQL — portable, no contributor needed
-                "SELECT coalesce(e.middleName, 'N/A') FROM Employee e",
+            tc("coalesce",
+                "SELECT coalesce(m.returnMessage, 'N/A') FROM Message m",
                 "coalesce(",
                 "coalesce("),
 
             tc("lpad",
-                "SELECT function('lpad', e.code, 10, '0') FROM Employee e",
+                "SELECT lpad(m.senderReference, 20, '0') FROM Message m",
                 "lpad(",
                 "lpad("),
 
             tc("rpad",
-                "SELECT function('rpad', e.code, 10, ' ') FROM Employee e",
+                "SELECT rpad(m.senderReference, 20, ' ') FROM Message m",
                 "rpad(",
                 "rpad("),
 
             tc("instr",
-                // Oracle: instr(), Postgres: strpos() or position()
-                "SELECT function('instr', e.email, '@') FROM Employee e",
+                // Oracle: instr(), Postgres: strpos()
+                "SELECT instr(m.senderReference, '-') FROM Message m",
                 "instr(",
                 "strpos("),    // adjust if your contributor uses position() instead
 
             tc("substr",
-                "SELECT function('substr', e.name, 1, 5) FROM Employee e",
+                "SELECT substr(m.senderReference, 1, 10) FROM Message m",
                 "substr(",
                 "substr("),
 
-            // ── CASE WHEN (replaces DECODE) ──────────────────────────────────
+            // ── CASE WHEN ────────────────────────────────────────────────────
 
             tc("case-when-simple",
-                "SELECT CASE e.status " +
-                "WHEN 'A' THEN 'Active' " +
-                "WHEN 'I' THEN 'Inactive' " +
-                "ELSE 'Unknown' END FROM Employee e",
+                "SELECT CASE m.returnMessage " +
+                "WHEN 'OK' THEN 'Success' " +
+                "WHEN 'ERR' THEN 'Error' " +
+                "ELSE 'Unknown' END FROM Message m",
                 "case",
                 "case"),
 
             tc("case-when-searched",
                 "SELECT CASE " +
-                "WHEN e.salary > 50000 THEN 'Senior' " +
-                "WHEN e.salary > 30000 THEN 'Mid' " +
-                "ELSE 'Junior' END FROM Employee e",
+                "WHEN m.orderCount > 1000 THEN 'High' " +
+                "WHEN m.orderCount > 100  THEN 'Mid' " +
+                "ELSE 'Low' END FROM Message m",
                 "case",
                 "case"),
 
-            // ── DML : UPDATE ─────────────────────────────────────────────────
-            // These are always rolled back — no data is committed.
+            // ── NVL / NVL2 ───────────────────────────────────────────────────
 
-            tc("update-set-sysdate",
-                "UPDATE Employee e SET e.updatedAt = function('sysdate') WHERE e.status = :status",
-                Map.of("status", "ACTIVE"),
-                "sysdate",
-                "now()"),
+            tc("nvl-string",
+                "SELECT nvl(m.returnMessage, 'N/A') FROM Message m",
+                "nvl(",
+                "coalesce("),  // adjust if your contributor generates something else
 
-            tc("update-trunc-in-where",
-                "UPDATE Employee e SET e.status = :newStatus " +
-                "WHERE function('trunc', e.createdAt) < function('trunc', function('sysdate'))",
-                Map.of("newStatus", "EXPIRED"),
-                "trunc(",
-                "date_trunc("),
+            tc("nvl-number",
+                "SELECT nvl(m.orderCount, 0) FROM Message m",
+                "nvl(",
+                "coalesce("),
 
-            tc("update-add-months",
-                "UPDATE Employee e SET e.expiryDate = function('add_months', function('sysdate'), 12) " +
-                "WHERE e.id = :id",
-                Map.of("id", 1L),
-                "add_months(",
-                "interval"),
-
-            // ── DML : DELETE ─────────────────────────────────────────────────
-
-            tc("delete-with-sysdate",
-                "DELETE FROM Employee e " +
-                "WHERE e.createdAt < function('add_months', function('sysdate'), -24)",
-                "add_months(",
-                "interval"),
-
-            tc("delete-with-trunc",
-                "DELETE FROM Employee e " +
-                "WHERE function('trunc', e.createdAt) < :cutoff",
-                Map.of("cutoff", java.time.LocalDate.now()),
-                "trunc(",
-                "date_trunc(")
-
-            // ── MERGE ─────────────────────────────────────────────────────────
-            // Hibernate 6 HQL MERGE generates MERGE INTO for Oracle and
-            // INSERT ... ON CONFLICT for Postgres. Uncomment and adapt to
-            // your entity structure.
-            //
-            // tc("merge-upsert",
-            //     "MERGE INTO Employee e " +
-            //     "USING (SELECT s.id, s.name FROM EmployeeStaging s) AS source (id, name) " +
-            //     "ON (e.id = source.id) " +
-            //     "WHEN MATCHED THEN UPDATE SET e.name = source.name " +
-            //     "WHEN NOT MATCHED THEN INSERT (id, name) VALUES (source.id, source.name)",
-            //     "merge into",
-            //     "on conflict")
+            tc("nvl2",
+                // nvl2(expr, value_if_not_null, value_if_null)
+                "SELECT nvl2(m.returnMessage, 'Has value', 'No value') FROM Message m",
+                "nvl2(",
+                "case when")   // adjust: contributor likely generates CASE WHEN ... END
         );
     }
 
@@ -433,7 +397,8 @@ class HqlTesterTest {
         System.out.println("Dialect: " + sfi.getJdbcServices().getDialect().getClass().getName());
 
         List.of("trunc", "sysdate", "systimestamp", "add_months", "months_between",
-                "last_day", "to_char", "to_date", "listagg", "instr", "lpad", "rpad", "substr")
+                "last_day", "to_char", "to_date", "listagg", "instr", "lpad", "rpad", "substr",
+                "coalesce")
             .forEach(fn -> {
                 var descriptor = registry.findFunctionDescriptor(fn);
                 System.out.printf("%-20s → %s%n", fn,
