@@ -105,6 +105,8 @@ public class HqlTestCase {
 
         // ── Result assertion shortcuts ────────────────────────────────────
 
+        // ── Row-level shortcuts ───────────────────────────────────────────
+
         public Builder resultNotEmpty() {
             this.resultChecks = List.of(ResultCheck.notEmpty());
             return this;
@@ -124,6 +126,28 @@ public class HqlTestCase {
             this.resultChecks = List.of(ResultCheck.rowCountAtLeast(n));
             return this;
         }
+
+        // ── Value-level shortcuts ─────────────────────────────────────────
+
+        /** Assert first row / first column equals the expected value. */
+        public Builder resultFirstValueEquals(Object expected) {
+            this.resultChecks = List.of(ResultCheck.firstValueEquals(expected));
+            return this;
+        }
+
+        /** Assert first row / first column contains the expected substring. */
+        public Builder resultFirstValueContains(String expected) {
+            this.resultChecks = List.of(ResultCheck.firstValueContains(expected));
+            return this;
+        }
+
+        /** Assert any cell in any row contains the expected substring. */
+        public Builder resultAnyValueContains(String expected) {
+            this.resultChecks = List.of(ResultCheck.anyValueContains(expected));
+            return this;
+        }
+
+        // ── Combine multiple checks ───────────────────────────────────────
 
         public Builder resultChecks(ResultCheck... checks) {
             this.resultChecks = Arrays.asList(checks);

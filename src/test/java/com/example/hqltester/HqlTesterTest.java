@@ -123,6 +123,8 @@ class HqlTesterTest {
 
     private void applyResultCheck(ResultCheck check, HqlTestResult result, String description) {
         switch (check.getType()) {
+
+            // ── Row-level ─────────────────────────────────────────────────
             case NOT_EMPTY -> assertThat(result.getRowCount())
                     .as("Expected non-empty results in '%s'", description)
                     .isGreaterThan(0);
@@ -135,6 +137,39 @@ class HqlTesterTest {
             case ROW_COUNT_AT_LEAST -> assertThat(result.getRowCount())
                     .as("Expected at least %d row(s) in '%s'", check.getCount(), description)
                     .isGreaterThanOrEqualTo(check.getCount());
+
+            // ── Value-level ───────────────────────────────────────────────
+            case FIRST_VALUE_EQUALS -> {
+                assertThat(result.getRows())
+                        .as("No rows returned in '%s' — cannot check first value", description)
+                        .isNotEmpty();
+                Object actual = result.getRows().get(0).get(0);
+                assertThat(String.valueOf(actual))
+                        .as("First value mismatch in '%s'\n  Expected: %s\n  Actual  : %s",
+                                description, check.getExpected(), actual)
+                        .isEqualTo(String.valueOf(check.getExpected()));
+            }
+            case FIRST_VALUE_CONTAINS -> {
+                assertThat(result.getRows())
+                        .as("No rows returned in '%s' — cannot check first value", description)
+                        .isNotEmpty();
+                Object actual = result.getRows().get(0).get(0);
+                assertThat(String.valueOf(actual))
+                        .as("First value does not contain expected substring in '%s'\n  Expected: ...%s...\n  Actual  : %s",
+                                description, check.getExpected(), actual)
+                        .contains(String.valueOf(check.getExpected()));
+            }
+            case ANY_VALUE_CONTAINS -> {
+                String needle = String.valueOf(check.getExpected()).toLowerCase(Locale.ROOT);
+                boolean found = result.getRows().stream()
+                        .flatMap(List::stream)
+                        .map(v -> String.valueOf(v).toLowerCase(Locale.ROOT))
+                        .anyMatch(s -> s.contains(needle));
+                assertThat(found)
+                        .as("No cell contains '%s' in '%s'\n  All values: %s",
+                                check.getExpected(), description, result.getRows())
+                        .isTrue();
+            }
         }
     }
 
