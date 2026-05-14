@@ -60,6 +60,9 @@ Merge into your `src/test/resources/application.properties`:
 hql-tester.active-dialect=oracle
 
 hql-tester.max-results=100
+
+# JSON export — disabled by default, enable locally for inspection
+hql-tester.export-results=false
 hql-tester.result-output-folder=./hql-test-results
 ```
 
@@ -73,40 +76,63 @@ hql-tester.result-output-folder=./hql-test-results
 
 Add entries to `hqlQueries()` in `HqlTesterTest.java`.
 
-Your `FunctionContributor` registers custom functions as named HQL functions, so call them
-directly — **no `function()` wrapper needed**:
+Each test case is an `HqlTestCase` that can carry a **SQL assertion**, a **result assertion**, or both.
+
+#### SQL assertion modes
+
+| Mode | Method | Behaviour |
+|------|--------|-----------|
+| `CONTAINS` | `.sqlContains(oracle, postgres)` | generated SQL contains the fragment *(default, most robust)* |
+| `EXACT` | `.sqlExact(oracle, postgres)` | normalized SQL equals the full expected string |
+| `REGEX` | `.sqlRegex(oracle, postgres)` | generated SQL matches the regex pattern |
+
+#### Result assertion options
+
+| Method | Behaviour |
+|--------|-----------|
+| `.resultNotEmpty()` | at least one row returned |
+| `.resultEmpty()` | zero rows returned |
+| `.resultRowCount(n)` | exactly n rows |
+| `.resultRowCountAtLeast(n)` | at least n rows |
+
+#### Examples
 
 ```java
 static Stream<Arguments> hqlQueries() {
     return Stream.of(
 
+        // ── Shorthand tc() — SQL fragment check (most common) ────────────
         tc("trunc-date",
             "SELECT trunc(m.creationDate) FROM Message m",
             "trunc(",        // fragment expected in Oracle SQL
             "date_trunc("),  // fragment expected in Postgres SQL
 
-        tc("listagg",
-            "SELECT m.senderReference, listagg(m.returnMessage, ',') " +
-            "FROM Message m GROUP BY m.senderReference",
-            "listagg(",
-            "string_agg("),
+        // ── With bind params ─────────────────────────────────────────────
+        tc("to-date",
+            "SELECT m FROM Message m WHERE m.creationDate > to_date(:d, 'YYYY-MM-DD')",
+            Map.of("d", "2024-01-01"),
+            "to_date(", "to_date("),
 
-        tc("update-sysdate",     // DML — always rolled back
-            "UPDATE Message m SET m.creationDate = sysdate() WHERE m.orderCount = :cnt",
-            Map.of("cnt", 0L),
-            "sysdate",
-            "now()")
+        // ── SQL check + result check ──────────────────────────────────────
+        tc(HqlTestCase.of("messages-exist", "SELECT m FROM Message m")
+            .sqlContains("from message", "from message")
+            .resultNotEmpty()
+            .build()),
+
+        // ── Result check only (no SQL assertion) ─────────────────────────
+        tc(HqlTestCase.of("count-messages", "SELECT count(m) FROM Message m")
+            .resultNotEmpty()
+            .build()),
+
+        // ── Exact SQL match ───────────────────────────────────────────────
+        tc(HqlTestCase.of("sysdate-exact",
+                "SELECT sysdate() FROM Message m")
+            .sqlExact(
+                "select sysdate from message m1_0",        // Oracle
+                "select now() from message m1_0")          // Postgres
+            .build())
     );
 }
-```
-
-Helper methods:
-```java
-// no params
-tc("description", "HQL", "oracle fragment", "postgres fragment")
-
-// with params
-tc("description", "HQL", Map.of("param", value), "oracle fragment", "postgres fragment")
 ```
 
 ## Running

@@ -1,8 +1,11 @@
 package com.example.hqltester;
 
 import com.example.hqltester.config.HqlTesterProperties;
+import com.example.hqltester.model.HqlTestCase;
 import com.example.hqltester.model.HqlTestResult;
 import com.example.hqltester.model.QueryType;
+import com.example.hqltester.model.ResultCheck;
+import com.example.hqltester.model.SqlCheck;
 import com.example.hqltester.service.HqlTesterService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.EntityManagerFactory;
@@ -33,13 +36,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * HQL → SQL inspection and dialect comparison test suite.
  *
- * Each test case carries:
- *   description | HQL | params | expected Oracle SQL fragment | expected Postgres SQL fragment
- *
- * Two assertions per test:
- *   1. result.error is null  → HQL compiled and ran on the DB without error
- *   2. generated SQL contains the expected fragment for the active dialect
- *      → confirms FunctionContributor / dialect mapping is applied correctly
+ * Each test case is an {@link com.example.hqltester.model.HqlTestCase} that can carry:
+ *   - a SQL assertion  (CONTAINS / EXACT / REGEX, per-dialect expected value)
+ *   - result assertions (NOT_EMPTY / EMPTY / ROW_COUNT_*)
+ *   - both, or neither (run-only — only the no-error assertion fires)
  *
  * Switch hql-tester.active-dialect=oracle|postgres in your properties file
  * when you change the target database.
@@ -71,34 +71,71 @@ class HqlTesterTest {
 
     @ParameterizedTest(name = "[{index}] {0}")
     @MethodSource("hqlQueries")
-    void testSqlGeneration(String description,
-                           String hql,
-                           Map<String, Object> params,
-                           String expectedOracleFragment,
-                           String expectedPostgresFragment) {
+    void testSqlGeneration(HqlTestCase tc) {
 
-        HqlTestResult result = service.run(hql, params, description);
+        HqlTestResult result = service.run(tc.getHql(), tc.getParams(), tc.getDescription());
         sessionResults.add(result);
         printResult(result);
 
         // 1. No compilation or DB execution error
         assertThat(result.getError())
-                .as("HQL error in '%s':\n%s", description, result.getError())
+                .as("HQL error in '%s':\n%s", tc.getDescription(), result.getError())
                 .isNull();
 
-        // 2. Generated SQL contains the expected dialect-specific fragment
-        String actualSql = String.join(" ", result.getGeneratedSql())
-                .toLowerCase(Locale.ROOT)
-                .replaceAll("\\s+", " ");
+        // 2. SQL assertion (optional)
+        if (tc.getSqlCheck() != null) {
+            String actualSql = String.join(" ", result.getGeneratedSql())
+                    .toLowerCase(Locale.ROOT)
+                    .replaceAll("\\s+", " ");
+            applySqlCheck(tc.getSqlCheck(), actualSql, tc.getDescription());
+        }
 
-        String expectedFragment = isOracle()
-                ? expectedOracleFragment.toLowerCase(Locale.ROOT)
-                : expectedPostgresFragment.toLowerCase(Locale.ROOT);
+        // 3. Result assertions (optional, ignored for DML)
+        for (ResultCheck rc : tc.getResultChecks()) {
+            applyResultCheck(rc, result, tc.getDescription());
+        }
+    }
 
-        assertThat(actualSql)
-                .as("Expected SQL fragment not found in '%s'\n  Dialect  : %s\n  Generated: %s\n  Expected : ...%s...",
-                        description, activeDialectLabel(), actualSql, expectedFragment)
-                .contains(expectedFragment);
+    private void applySqlCheck(SqlCheck check, String actualSql, String description) {
+        String expected = (isOracle()
+                ? check.getOracleExpected()
+                : check.getPostgresExpected()
+        ).toLowerCase(Locale.ROOT);
+
+        switch (check.getMode()) {
+            case CONTAINS -> assertThat(actualSql)
+                    .as("SQL fragment not found in '%s'\n  Dialect  : %s\n  Generated: %s\n  Expected : ...%s...",
+                            description, activeDialectLabel(), actualSql, expected)
+                    .contains(expected);
+            case EXACT -> {
+                String normalizedExpected = expected.replaceAll("\\s+", " ").trim();
+                assertThat(actualSql.trim())
+                        .as("SQL exact match failed in '%s'\n  Dialect  : %s\n  Generated: %s\n  Expected : %s",
+                                description, activeDialectLabel(), actualSql, normalizedExpected)
+                        .isEqualTo(normalizedExpected);
+            }
+            case REGEX -> assertThat(actualSql)
+                    .as("SQL regex not matched in '%s'\n  Dialect  : %s\n  Generated: %s\n  Pattern  : %s",
+                            description, activeDialectLabel(), actualSql, expected)
+                    .matches("(?s).*" + expected + ".*");
+        }
+    }
+
+    private void applyResultCheck(ResultCheck check, HqlTestResult result, String description) {
+        switch (check.getType()) {
+            case NOT_EMPTY -> assertThat(result.getRowCount())
+                    .as("Expected non-empty results in '%s'", description)
+                    .isGreaterThan(0);
+            case EMPTY -> assertThat(result.getRowCount())
+                    .as("Expected empty results in '%s'", description)
+                    .isZero();
+            case ROW_COUNT_EXACT -> assertThat(result.getRowCount())
+                    .as("Expected exactly %d row(s) in '%s'", check.getCount(), description)
+                    .isEqualTo(check.getCount());
+            case ROW_COUNT_AT_LEAST -> assertThat(result.getRowCount())
+                    .as("Expected at least %d row(s) in '%s'", check.getCount(), description)
+                    .isGreaterThanOrEqualTo(check.getCount());
+        }
     }
 
     // =========================================================================
@@ -313,16 +350,23 @@ class HqlTesterTest {
     // Helpers
     // =========================================================================
 
-    /** No-params shorthand. */
+    /** SQL-contains check, no params. */
     private static Arguments tc(String desc, String hql, String oraFrag, String pgFrag) {
-        return Arguments.of(desc, hql, Map.of(), oraFrag, pgFrag);
+        return Arguments.of(
+                HqlTestCase.of(desc, hql).sqlContains(oraFrag, pgFrag).build());
     }
 
-    /** With bind params. */
+    /** SQL-contains check, with bind params. */
     private static Arguments tc(String desc, String hql,
                                  Map<String, Object> params,
                                  String oraFrag, String pgFrag) {
-        return Arguments.of(desc, hql, params, oraFrag, pgFrag);
+        return Arguments.of(
+                HqlTestCase.of(desc, hql).params(params).sqlContains(oraFrag, pgFrag).build());
+    }
+
+    /** Full HqlTestCase — use when you need result checks, EXACT/REGEX mode, or no SQL check. */
+    private static Arguments tc(HqlTestCase testCase) {
+        return Arguments.of(testCase);
     }
 
     private boolean isOracle() {
@@ -344,7 +388,7 @@ class HqlTesterTest {
 
     @AfterAll
     void writeSessionResultsToFile() throws IOException {
-        if (sessionResults.isEmpty()) return;
+        if (!properties.isExportResults() || sessionResults.isEmpty()) return;
 
         String dialect = resolveDialectName();
         String timestamp = LocalDateTime.now()

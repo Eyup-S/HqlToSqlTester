@@ -16,7 +16,13 @@ public class HqlTesterProperties {
     /** Maximum rows returned for SELECT queries. */
     private int maxResults = 100;
 
-    /** Folder where per-run JSON result files are written. */
+    /**
+     * Whether to write a JSON result file after each test run.
+     * Disabled by default — enable locally for inspection, keep off in CI/deployments.
+     */
+    private boolean exportResults = false;
+
+    /** Folder where per-run JSON result files are written (only used when exportResults=true). */
     private String resultOutputFolder = "./hql-test-results";
 
     public String getActiveDialect() { return activeDialect; }
@@ -24,6 +30,9 @@ public class HqlTesterProperties {
 
     public int getMaxResults() { return maxResults; }
     public void setMaxResults(int maxResults) { this.maxResults = maxResults; }
+
+    public boolean isExportResults() { return exportResults; }
+    public void setExportResults(boolean exportResults) { this.exportResults = exportResults; }
 
     public String getResultOutputFolder() { return resultOutputFolder; }
     public void setResultOutputFolder(String resultOutputFolder) { this.resultOutputFolder = resultOutputFolder; }
