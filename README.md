@@ -88,12 +88,24 @@ Each test case is an `HqlTestCase` that can carry a **SQL assertion**, a **resul
 
 #### Result assertion options
 
+**Row-level:**
+
 | Method | Behaviour |
 |--------|-----------|
 | `.resultNotEmpty()` | at least one row returned |
 | `.resultEmpty()` | zero rows returned |
 | `.resultRowCount(n)` | exactly n rows |
 | `.resultRowCountAtLeast(n)` | at least n rows |
+
+**Value-level** (comparison via `toString()`):
+
+| Method | Behaviour |
+|--------|-----------|
+| `.resultFirstValueEquals(expected)` | first row / first column equals the value |
+| `.resultFirstValueContains(str)` | first row / first column contains the substring |
+| `.resultAnyValueContains(str)` | any cell in any row contains the substring |
+
+Combine multiple checks with `.resultChecks(ResultCheck...) `.
 
 #### Examples
 
@@ -113,27 +125,47 @@ static Stream<Arguments> hqlQueries() {
             Map.of("d", "2024-01-01"),
             "to_date(", "to_date("),
 
-        // ── SQL check + result check ──────────────────────────────────────
+        // ── SQL check + result row check ──────────────────────────────────
         tc(HqlTestCase.of("messages-exist", "SELECT m FROM Message m")
             .sqlContains("from message", "from message")
             .resultNotEmpty()
             .build()),
 
-        // ── Result check only (no SQL assertion) ─────────────────────────
-        tc(HqlTestCase.of("count-messages", "SELECT count(m) FROM Message m")
-            .resultNotEmpty()
+        // ── Scalar value check — query always returns a known constant ────
+        tc(HqlTestCase.of("order-count-total", "SELECT count(m) FROM Message m WHERE m.orderCount = 123")
+            .resultFirstValueEquals(123L)
+            .build()),
+
+        // ── First value contains substring ────────────────────────────────
+        tc(HqlTestCase.of("sender-prefix", "SELECT m.senderReference FROM Message m")
+            .resultFirstValueContains("REF")
+            .build()),
+
+        // ── Any cell in results contains substring ────────────────────────
+        tc(HqlTestCase.of("any-ok-message", "SELECT m.returnMessage FROM Message m")
+            .resultAnyValueContains("OK")
+            .build()),
+
+        // ── Combine multiple result checks ────────────────────────────────
+        tc(HqlTestCase.of("count-with-value", "SELECT count(m) FROM Message m")
+            .resultChecks(
+                ResultCheck.rowCountAtLeast(1),
+                ResultCheck.firstValueEquals(5L))
             .build()),
 
         // ── Exact SQL match ───────────────────────────────────────────────
-        tc(HqlTestCase.of("sysdate-exact",
-                "SELECT sysdate() FROM Message m")
+        tc(HqlTestCase.of("sysdate-exact", "SELECT sysdate() FROM Message m")
             .sqlExact(
-                "select sysdate from message m1_0",        // Oracle
-                "select now() from message m1_0")          // Postgres
+                "select sysdate from message m1_0",   // Oracle
+                "select now() from message m1_0")     // Postgres
             .build())
     );
 }
 ```
+
+> **SQL assertions are always dialect-aware.** Both `.sqlContains()` and `.sqlExact()` store
+> separate Oracle and Postgres expected values. The active dialect
+> (`hql-tester.active-dialect`) determines which one is asserted at runtime.
 
 ## Running
 
